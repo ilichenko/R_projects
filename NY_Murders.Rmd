@@ -1,0 +1,545 @@
+---
+title: "NY Murders Data Report"
+author: "@ilichenko"
+date: '2022-03-29'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# I. Introduction
+## 1. Objective
+The objective of this study is to analyze shooting incidents and murders in each of New York City's boroughs committed between the years 2006 and 2020. For this, two datasets, "NYPD Shooting Incident Data Historic" and "Index Crimes by County and Agency: Beginning 1990", will be imported and tidied. Thereafter, several transformations and visualizations will be made, and three machine learning models will be built.
+
+## 2. Libraries
+The following libraries must be installed to knit this document:
+```{r setup, echo=TRUE, warning=FALSE, message=FALSE}
+library(readr)
+library(knitr)
+library(dplyr)
+library(magrittr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(hrbrthemes)
+library(hexbin)
+library(formatR)
+```
+
+
+# II: NYPD Historical Shooting Incidents Analysis
+## 1. Importing Data
+The first step is to import data in the .csv format and then load it into the variable *shootings*:
+```{r get_shooting_data, echo=TRUE, message=FALSE}
+url <-
+  "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shootings <- read_csv(url)
+```
+
+## 2. Tidying Data
+Let's consider some examples of inconsistencies in our data that should serve as motivation for tidying.
+
+Example 1:
+```{r dirty_data_example_sex, echo=TRUE}
+count(shootings, PERP_SEX = "U")
+```
+Example 2:
+```{r dirty_data_example_race, echo=TRUE}
+count(shootings, PERP_RACE = "UNKNOWN")
+```
+Example 3:
+```{r dirty_data_example_age, echo=TRUE}
+count(shootings, PERP_AGE_GROUP) %>%
+  filter(n == "1")
+```
+Therefore, the following dataset columns are selected for further analysis: *BORO*, *PERP_AGE_GROUP*, *PERP_SEX*, *PERP_RACE*, *VIC_AGE_GROUP*, *VIC_SEX*, *VIC_RACE*, *Latitude*, *Longitude.* It was decided to use *OCCUR_YEAR* instead of *OCCUR_DATE* due to the uninformative nature of dates in the context of this study.  
+
+Next, information about perpetrators and victims is filtered:  
+
+- to filter age:  
+  - "*<*" sign is used for the category "*<18*",  
+  - "*-*" sign is used for the categories "*18-24*", "*25-44*" and "*45-64*", and  
+  - "*+*" sign is used for the category "*65+*"; all rows with values that do not match this pattern are dropped,
+- to filter sex, all rows with the value "*U*" are dropped.  
+
+Finally, all rows with the values "*UNKNOWN*" and "*NA*" are dropped:
+```{r tidying_shooting_data, echo=TRUE}
+shootings <- shootings %>%
+  select(
+    OCCUR_DATE,
+    BORO,
+    PERP_AGE_GROUP,
+    PERP_SEX,
+    PERP_RACE,
+    VIC_AGE_GROUP,
+    VIC_SEX,
+    VIC_RACE,
+    Latitude,
+    Longitude
+  ) %>%
+  separate(
+    OCCUR_DATE,
+    sep = "/",
+    convert = TRUE,
+    into = c(NA, NA, "OCCUR_YEAR")
+  ) %>% # only years of occurance will be relevant for further analysis
+  filter((
+    grepl("<", PERP_AGE_GROUP) | grepl("+", PERP_AGE_GROUP) |
+      grepl("-", PERP_AGE_GROUP)
+  ) & !grepl("U", PERP_SEX)) %>%
+  filter((
+    grepl("<", VIC_AGE_GROUP) | grepl("+", VIC_AGE_GROUP) |
+      grepl("-", VIC_AGE_GROUP)
+  ) & !grepl("U", VIC_SEX)) %>%
+  na_if("UNKNOWN") %>%
+  na.omit()
+
+shootings
+```
+
+
+## 3. Transforming and Visualizing Data
+
+### 3.1. Perpetrators and Victims
+For further analysis, categories are defined to include age, gender, and race. The number of perpetrators and victims for each category is then calculated:
+```{r vics_pers, echo=TRUE}
+shootings_vic <-
+  unite(shootings,
+        "VIC_AGE_GROUP",
+        "VIC_SEX",
+        "VIC_RACE",
+        col = "cathegory",
+        sep = ", ")
+shootings_per <-
+  unite(shootings,
+    "PERP_AGE_GROUP",
+    "PERP_SEX",
+    "PERP_RACE",
+    col = "cathegory",
+    sep = ", "
+  )
+
+shootings_all <-
+  inner_join(
+    count(shootings_vic, cathegory),
+    count(shootings_per, cathegory),
+    by = "cathegory",
+    suffix = c("_vic", "_per")
+  )
+
+shootings_all
+```
+Let's visualize the data from the above tibble (the code for visualizations will not be presented to save space):
+```{r vics_pers_vis, echo=FALSE}
+shootings_all %>%
+  ggplot(aes(x = cathegory, y = n_vic)) +
+  geom_point(aes(color = "victims")) +
+  geom_point(aes(y = n_per, color = "perpetrators")) +
+  scale_color_manual(
+    labels = c("victims", "perpetrators"),
+    values = c("victims" = "#00ba38", "perpetrators" = "#00099d")
+  ) +
+  scale_y_log10() +
+  #facet_wrap(~ strsplit(cathegory, ",") %>% sapply(extract2, 2)) +
+  labs(
+    title = "Shooting Incidents In New York",
+    x = "Cathegory",
+    y = "Number Of Victims & Perpetrators",
+    colour = element_blank()
+  ) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(
+      colour = "black",
+      size = 12,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      colour = "black",
+      size = 9,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 0
+    ),
+    axis.title.y = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 1
+    ),
+    axis.text.x = element_text(angle = 90, size = 6, face = "plain"),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+```
+This visualization allows us to draw some intermediate conclusions:
+
+- Women and children under the age of 18, regardless of gender, are far more likely to be victims than perpetrators. The opposite is only true in the three categories, however, the difference in the number of perpetrators and victims is not as substantial as for the rest of the cases.
+- Similar observations occur for people aged 65+, the only exception being the category of white men.
+- Black men between the ages of 18 and 44 are significantly more likely than all others to be both perpetrators and victims.
+
+
+### 3.2. Geography of Shooting Incidents
+During data tidying, a fairly large part of the data was lost, so a geographic analysis concerning the number of shooting incidents would not be entirely appropriate. However, we can reflect this data on a map of New York City to determine the overall crime situation in each borough from 2006 to 2020, using latitude and longitude of the shooting incidents:  
+```{r geo_vis, echo=FALSE}
+shootings %>%
+  ggplot() +
+  geom_hex(aes(x = Longitude, y = Latitude, color = BORO)) +
+  scale_fill_viridis_c(begin = 0, end = 0.7) +
+  guides(color = guide_legend("Boroughs")) +
+  labs(title = "Shooting Incidents In New York") +
+  theme(
+    legend.title = element_text(
+      colour = "black",
+      size = 12,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      colour = "black",
+      size = 9,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 0
+    ),
+    axis.title.y = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 1
+    ),
+    axis.text.x = element_text(size = 9, face = "bold"),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+```
+Thus, during the entire period under review, the most frequent shooting incidents occurred in the West Bronx and Northeast Brooklyn. The smallest number of shooting incidents took place in Staten Island.
+
+
+# III. NY Murders Analysis
+In this section, we want to analyze the shooting incidents that led to the victim's death and compare the results to the data on murders in New York City identifying possible correlations. When conducting the analysis, we expect the number of murders to be higher than the number of murders by shooting. Otherwise, we could say that there is a bias in the data.
+
+## 1. Importing and Tidying Shooting Incidents Data 
+As we require an exact number of shooting incidents, we import the "NYPD Shooting Incident Data Historic" dataset anew without removing the rows with unknown data about victims and perpetrators, but filtering it by incidents that resulted in a fatality:
+```{r get_and_tidy_shooting_data, echo=TRUE, message=FALSE}
+url <-
+  "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shootings <- read_csv(url)
+
+shootings_murdered_y_boro_pivot <- shootings %>%
+  select(OCCUR_DATE,
+         STATISTICAL_MURDER_FLAG,
+         BORO) %>%
+  separate(
+    OCCUR_DATE,
+    sep = "/",
+    convert = TRUE,
+    into = c(NA, NA, "OCCUR_YEAR")
+  ) %>%
+  filter(STATISTICAL_MURDER_FLAG == "TRUE")
+
+shootings_murdered_y_boro_pivot <-
+  pivot_wider(
+    count(shootings_murdered_y_boro_pivot, OCCUR_YEAR, BORO),
+    names_from = "BORO",
+    values_from = "n"
+  ) %>%
+  rename(STATEN_ISLAND = "STATEN ISLAND") %>%
+  rename(Year = "OCCUR_YEAR")
+
+shootings_murdered_y_boro_pivot_w_totals <-
+  shootings_murdered_y_boro_pivot %>%
+  rowwise(Year) %>%
+  mutate(Total = sum(c(
+    BRONX, BROOKLYN, MANHATTAN, QUEENS, STATEN_ISLAND
+  )))
+
+shootings_murdered_y_boro_pivot_w_totals
+```
+A further column containing the sum of the shooting incidents in all boroughs of New York City for each year were added to the tibble. From this we can conclude that the most people were fatally shot in 2006 (445 victims) and the least in 2017 (174 victims).
+
+## 2. Importing Crimes Data 
+In the next step, we import and tidy the "Index Crimes by County and Agency: Beginning 1990" dataset:
+```{r get_crimes_data, echo=TRUE, message=FALSE}
+url_crimes <-
+  "https://data.ny.gov/api/views/ca8h-8gjq/rows.csv?accessType=DOWNLOAD"
+crimes <- read_csv(url_crimes)
+```
+
+## 3. Tidying & Transforming Data
+Since we are not interested in all of the crime categories, we filter the data for murders committed between 2006 and 2020. As the information in this dataset is presented by New York counties, we need to rename them to boroughs, and then change the data type from double to integer for further analysis:
+```{r tidying_murders_data, echo=TRUE}
+murders <- crimes %>%
+  filter(
+    grepl("Kings", County) |
+      grepl("Queens", County) |
+      grepl("Bronx", County) |
+      grepl("Richmond", County) | grepl("New York", County)
+  ) %>%
+  select(c(Year, County, Murder)) %>%
+  filter(Year >= 2006 & Year <= 2020)
+
+murders_y_boro_pivot_fatal <-
+  pivot_wider(murders,
+              names_from = "County",
+              values_from = "Murder") %>%
+  rename(STATEN_ISLAND = "Richmond") %>%
+  rename(BROOKLYN = "Kings") %>%
+  rename(QUEENS = "Queens") %>%
+  rename(MANHATTAN = "New York") %>%
+  rename(BRONX = "Bronx") %>%
+  mutate(across(STATEN_ISLAND, as.integer)) %>%
+  mutate(across(BROOKLYN, as.integer)) %>%
+  mutate(across(QUEENS, as.integer)) %>%
+  mutate(across(MANHATTAN, as.integer)) %>%
+  mutate(across(BRONX, as.integer)) %>%
+  mutate(across(Year, as.integer))
+
+murders_y_boro_pivot_fatal_w_totals <-
+  murders_y_boro_pivot_fatal %>%
+  rowwise(Year) %>%
+  mutate(Total = sum(c(
+    BRONX, BROOKLYN, MANHATTAN, QUEENS, STATEN_ISLAND
+  )))
+
+murders_y_boro_pivot_fatal_w_totals
+```
+The added column containing the total number of murders in all boroughs of New York City for each year allows us to observe a correlation with fatal shootings: The most people were murdered in 2006 (596 victims), and the least in 2017 (292 victims). However, it is worth pointing out that only 3 more people were murdered in 2018 than in 2017.
+
+Next, let's make a new tibble that reflects the percentage of murders by shooting to the total number of murders:  
+```{r murders_and_shootings_data_percentage, echo=TRUE}
+shootings_murdered_w_totals <-
+  inner_join(
+    shootings_murdered_y_boro_pivot_w_totals,
+    murders_y_boro_pivot_fatal_w_totals,
+    by = "Year",
+    suffix = c("_s", "_m")
+  ) %>%
+  mutate(BRONX_m = paste0(round(BRONX_s / BRONX_m * 100, 2), "%")) %>%
+  mutate(BROOKLYN_m = paste0(round(BROOKLYN_s / BROOKLYN_m * 100, 2), "%")) %>%
+  mutate(MANHATTAN_m = paste0(round(MANHATTAN_s / MANHATTAN_m * 100, 2), "%")) %>%
+  mutate(QUEENS_m = paste0(round(QUEENS_s / QUEENS_m * 100, 2), "%")) %>%
+  mutate(STATEN_ISLAND_m = paste0(round(STATEN_ISLAND_s / STATEN_ISLAND_m *
+                                          100, 2), "%")) %>%
+  unite("BRONX_s",
+        "BRONX_m",
+        col = "BRONX",
+        sep = " / ") %>%
+  unite("BROOKLYN_s",
+        "BROOKLYN_m",
+        col = "BROOKLYN",
+        sep = " / ") %>%
+  unite("MANHATTAN_s",
+        "MANHATTAN_m",
+        col = "MANHATTAN",
+        sep = " / ") %>%
+  unite("QUEENS_s",
+        "QUEENS_m",
+        col = "QUEENS",
+        sep = " / ") %>%
+  unite("STATEN_ISLAND_s",
+        "STATEN_ISLAND_m",
+        col = "STATEN_ISLAND",
+        sep = " / ")
+
+shootings_murdered_w_percentage <- shootings_murdered_w_totals %>%
+  select(-c(Total_s, Total_m))
+
+shootings_murdered_w_percentage
+```
+As we have already found out, Brooklyn and the Bronx are where most of the shooting incidents occurred, so we can look at the data from these boroughs in combination. The percentages show that the majority of people murdered in these boroughs were shot - the minimum percentage is 67.42% (Bronx, 2008). It is astounding that as many as 92% of those murdered in Brooklyn in 2020 were shot, which is the second highest percentage among all boroughs in the entire period under review.
+
+Let's look at the values in Manhattan and Queens next, as there is an interesting correlation between the two. For example, there was an upward trend in percentages since 2013. In 2015, percentages were at their highest, 92.68% in Manhattan and 75% in Queens (Queens had the same percentage in 2010). It is also interesting to note that Manhattan is the only borough where the percentages did not increase but decreased from 59.62% to 55.95% between 2019 and 2020 despite the increased number of shootings.
+
+Staten Island saw large spikes in percentages due to the small number of murders. It should be mentioned that in 2008, the maximum number of people shot was 19, which was 90.48% of the total number of murders in the borough. Up to and including 2019, there was a continued downward trend in the number of people shot - in 2016 it was even 28.57%. However, in 2020 there was a sharp increase to 16 people shot, or 80% of the total number of murders. 
+
+Next, let's look at citywide data on shootings and murders:  
+```{r murders_and_shootings_data, warning=FALSE, echo=TRUE}
+murders_and_shootings <- shootings_murdered_w_totals %>%
+  select(c(Year, Total_s, Total_m)) %>%
+  rename(Murders_By_Shooting = "Total_s") %>%
+  rename(Murders = "Total_m")
+
+murders_and_shootings
+```
+In the next step, we visualize the data obtained:  
+```{r murders_and_shootings_data_vis, warning=FALSE, echo=FALSE}
+murders_and_shootings %>%
+  ggplot(aes(x = Year, y = Murders)) +
+  geom_line(aes(y = Murders, group = 1, color = "Murders")) +
+  geom_point(aes(y = Murders, color = "Murders")) +
+  geom_line(aes(y = Murders_By_Shooting, group = 1, color = "Murders_By_Shooting")) +
+  geom_point(aes(y = Murders_By_Shooting, color = "Murders_By_Shooting")) +
+  scale_color_manual(
+    labels = c("Murders", "Murders_By_Shooting"),
+    values = c("Murders" = "#000000",
+               "Murders_By_Shooting" = "#C61616")
+  ) +
+  labs(
+    title = "Murders In New York",
+    x = "Occurance Year",
+    y = "Number Of Cases",
+    colour = ""
+  ) +
+  theme(
+    legend.position = "right",
+    legend.text = element_text(
+      colour = "black",
+      size = 9,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 0
+    ),
+    axis.title.y = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 1
+    ),
+    axis.text.x = element_text(size = 9, face = "bold"),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+```
+This graph both confirms our observations above and allows us to draw new conclusions. First of all, we notice that the black line is always above the red line, i.e., the original data were bias-free. Interestingly, the margin between the red and black points is maximal in 2008 and minimal in 2015, that is, in 2008 the victims were much more likely to be murdered in a way different from shooing, while in 2015 the opposite is true. 
+
+## 4. Modelling and Visualizing Data
+In the last step, we build three machine learning models, of third-, ninth- and tenth-order, that should predict the number of shooting incidents in NY between 2006 and 2020 that resulted in a fatality, and thereafter we compare their performance:
+```{r murders_by_shooting_data_modelling, echo=TRUE}
+model_murders_by_shooting_3 <-
+  lm(Murders_By_Shooting ~ poly(Year, degree = 3), data = murders_and_shootings)
+pred_murders_by_shooting_3 <- predict(model_murders_by_shooting_3)
+
+model_murders_by_shooting_9 <-
+  lm(Murders_By_Shooting ~ poly(Year, degree = 9), data = murders_and_shootings)
+pred_murders_by_shooting_9 <- predict(model_murders_by_shooting_9)
+
+model_murders_by_shooting_10 <-
+  lm(Murders_By_Shooting ~ poly(Year, degree = 10), data = murders_and_shootings)
+pred_murders_by_shooting_10 <- predict(model_murders_by_shooting_10)
+```
+Let's add the obtained predictions to our tibble and visualize the data:
+```{r murders_by_shooting_data_pred, echo=TRUE}
+pred_murders_by_shooting_3 <-
+  as_tibble(round(pred_murders_by_shooting_3, 0))
+pred_murders_by_shooting_9 <-
+  as_tibble(round(pred_murders_by_shooting_9, 0))
+pred_murders_by_shooting_10 <-
+  as_tibble(round(pred_murders_by_shooting_10, 0))
+
+murders_and_shootings_with_pred <- murders_and_shootings %>%
+  add_column(pred_murders_by_shooting_10$value, .after = "Murders_By_Shooting") %>%
+  add_column(pred_murders_by_shooting_9$value, .after = "Murders_By_Shooting") %>%
+  add_column(pred_murders_by_shooting_3$value, .after = "Murders_By_Shooting") %>%
+  rename(Murders_By_Shooting_Pr3 = "pred_murders_by_shooting_3$value") %>%
+  rename(Murders_By_Shooting_Pr9 = "pred_murders_by_shooting_9$value") %>%
+  rename(Murders_By_Shooting_Pr10 = "pred_murders_by_shooting_10$value") %>%
+  mutate(across(Murders_By_Shooting_Pr3, as.integer)) %>%
+  mutate(across(Murders_By_Shooting_Pr9, as.integer)) %>%
+  mutate(across(Murders_By_Shooting_Pr10, as.integer))
+
+murders_and_shootings_with_pred
+```
+
+```{r murders_by_shooting_data_pred_vis, echo=FALSE, warning=FALSE}
+murders_and_shootings_with_pred %>%
+  ggplot(aes(x = Year, y = Murders_By_Shooting)) +
+  geom_line(aes(color = "Murders_By_Shooting"), show.legend = F) +
+  geom_point(aes(color = "Murders_By_Shooting")) +
+  geom_line(aes(y = Murders_By_Shooting_Pr3),
+            color = "#00008B",
+            linetype = "dotted") +
+  geom_point(
+    aes(y = Murders_By_Shooting_Pr3),
+    color = "#00008B",
+    shape = 21,
+    size = 2
+  ) +
+  geom_line(aes(y = Murders_By_Shooting_Pr9),
+            color = "#005000",
+            linetype = "twodash") +
+  geom_point(
+    aes(y = Murders_By_Shooting_Pr9),
+    color = "#005000",
+    shape = 21,
+    size = 2
+  ) +
+  geom_line(aes(y = Murders_By_Shooting_Pr10),
+            color = "#000000",
+            linetype = "dashed") +
+  geom_point(
+    aes(y = Murders_By_Shooting_Pr10),
+    color = "#000000",
+    shape = 21,
+    size = 2
+  ) +
+  scale_color_manual(
+    labels = c(
+      "Murders_By_Shooting",
+      "Murders_By_Shooting_Pr3",
+      "Murders_By_Shooting_Pr9",
+      "Murders_By_Shooting_Pr10"
+    ),
+    values = c(
+      "Murders_By_Shooting" = "#BBBBBB",
+      "Murders_By_Shooting_Pr4" = "#00008B",
+      "Murders_By_Shooting_Pr9" = "#005000",
+      "Murders_By_Shooting_Pr10" = "#000000"
+    )
+  ) +
+  scale_y_log10() +
+  labs(
+    title = "Murders By Shooting In New York With Predictions",
+    x = "Occurance Year",
+    y = "Normalized Number Of Cases",
+    colour = ""
+  ) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(
+      colour = "black",
+      size = 12,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      colour = "black",
+      size = 9,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 0
+    ),
+    axis.title.y = element_text(
+      color = "black",
+      size = 10,
+      face = "italic",
+      hjust = 0.5,
+      vjust = 1
+    ),
+    axis.text.x = element_text(size = 9, face = "bold"),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+```
+It is obvious that the third-order model produced excessively inaccurate predictions. The data obtained by using the ninth-degree model is much more accurate in describing the original data, but we still need to increase the degree of the model due to imprecise predictions for some years. The best option is the tenth-degree polynomial, which matches the original graph sufficiently that we do not need to use a higher degree to build the machine learning model. 
+
+
+# IV. Conclusion
+This study looked at shootings in each of New York City's boroughs and analyzed data based on the age, sex and race of the victims and perpetrators, as well as the location of the incidents. It also identified correlations with murders and compared the prediction results of three machine learning models.
